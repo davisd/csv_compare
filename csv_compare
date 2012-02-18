@@ -1,0 +1,204 @@
+#!/usr/bin/env python2
+
+import csv
+import sys
+from sys import stdout, stderr
+import os
+import argparse
+
+class RetainValueIterator(object):
+    def __init__(self, f):
+        self.f=f
+        self.val=None
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        self.val=self.f.next()
+        return self.val
+
+def compare(files, id_column, ignore_columns=None, verbose=False):
+    """
+    Compare multiple csv files using a dict
+
+    files - list of file names
+    id_column - name of the column containing the unique ID
+    ignore_columns - columns to ignore
+    verbose - verbose indicator
+
+    """
+    if not ignore_columns:
+        ignore_columns=[]
+
+    data=[]
+    ignore_indexes=[]
+    _last_header=None
+    for f in files:
+        _f=open(f, 'rb')
+        _rv=RetainValueIterator(_f)
+        _csv=csv.reader(_rv)
+        _header=_csv.next()
+
+        if _last_header and _header != _last_header:
+            raise Exception('The header rows do not match')
+        _last_header=_header
+
+        # d[0]: filename
+        # d[1]: csv_reader
+        # d[2]: retain_value_iterator
+        # d[3]: row_number
+        # d[4]: completion_status
+        # d[5]: dict
+        data.append([f, _csv, _rv, 1, False, {},])
+
+    # ensure the id_column exists and get the column index
+    if id_column not in _last_header:
+        raise Exception('The id coumn specified does not exist')
+    id_column_index=_last_header.index(id_column)
+
+    # get the indexes for the ignore_columns
+    try:
+        ignore_indexes=[_last_header.index(a) for a in ignore_columns]
+    except ValueError:
+        raise Exception('One or more of the specified ignore columns does ' \
+            'not exist')
+        
+    # identify hashable indexes
+    hashable_indexes = \
+        [a for a in range(len(_last_header)) if a not in ignore_indexes]
+
+    if verbose:
+        stderr.write('Loading data from %d files\n' % (len(files),))
+
+    # write the mismatch header
+    stdout.write(
+        'file,line,%s\n' % (','.join(_last_header)),)
+
+    # default to first data
+    current_index=0
+
+    # While any data has yet to complete
+    while any(not d[4] for d in data):
+        # keep in range
+        if current_index > (len(data)-1):
+            current_index=0
+        # find the next incomplete data
+        while data[current_index][4]==True:
+            current_index+=1
+        # set the current data
+        d=data[current_index]
+
+        try:
+            # next row
+            row=d[1].next()
+            # get the raw csv from the retain value iterator
+            csv_text=d[2].val
+            # increment row count
+            d[3]+=1
+            if len(row):
+                ident=row[id_column_index]
+                hashed=hash(''.join(row[x] for x in hashable_indexes))
+
+                # determine if id exists in the other data dicts
+                found_in_all=True
+                for od in [x for x in data if x != d]:
+                    if ident not in od[5]:
+                        found_in_all=False
+                        break
+
+                if found_in_all: # id exists in all other data dicts
+                    # determine whether they all match
+                    all_match=True
+                    for od in [x for x in data if x != d]:
+                        if od[5][ident][0]!=hashed:
+                            all_match=False
+                            break
+
+                    # if the data did not match, print results
+                    if not all_match:
+                        # iterate thru each data
+                        for od in [x for x in data if x != d]:
+                            stdout.write('%s,%s,%s' % \
+                                (od[0], od[5][ident][1], od[5][ident][2]))
+                        stdout.write('%s,%s,%s' % \
+                            (d[0], d[3], csv_text))
+
+                    # iterate thru each data and delete the items
+                    for od in [x for x in data if x != d]:
+                        del od[5][ident]
+
+                else: # id does not yet exists in all other dicts
+                    d[5][ident]=(hashed, d[3], csv_text)
+
+                # file switching every 100,000 rows
+                if d[3] % 100000 == 0:
+                    current_index+=1
+
+        except StopIteration:
+            # set completion status and increment data index   
+            d[4]=True
+            current_index+=1
+
+    if verbose:
+        stderr.write('Scanning for unique IDs\n')
+
+    # Find Rows that are not in ALL files.
+    stderr.write('%s,%s' % (id_column, ','.join([d[0] for d in data])))
+    if len(files) > 2:
+        stderr.write(',consistency')
+    stderr.write('\n')
+
+    # create a set of all remaining IDs
+    id_set=set().union(*[d[5].keys() for d in data])
+
+    # iterate the set
+    for id in id_set:
+        if len(files) > 2:
+            _last_hash=None
+            matched=True
+        stderr.write('%s' % (id,))
+        for d in data:
+            if id in d[5]:
+                stderr.write(',True')
+                if len(files) > 2:
+                    # check last hash
+                    if _last_hash and d[5][id][0]!= _last_hash:
+                        matched=False
+                    _last_hash=d[5][id][0]
+            else:
+                stderr.write(',False')
+        if len(files) > 2:
+            if matched:
+                stderr.write(',consistent')
+            else:
+                stderr.write(',mismatched')
+        stderr.write('\n')
+
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv
+
+    parser=argparse.ArgumentParser(description='compare two csv files')
+    parser.add_argument('files', help='file to compare',
+        metavar='file', nargs='+')
+    parser.add_argument('identity_col', metavar='identity_column',
+        help='identity column name')
+
+    parser.add_argument('--ignore', help='columns to ignore',
+        nargs='+', default=[])
+    parser.add_argument('--verbose', '-v', help='verbose indicator',
+        action='store_true', default=False)
+
+    args=parser.parse_args(argv[1:])
+
+    files=args.files
+    identity_col=[] or args.identity_col
+    ignore=args.ignore
+    verbose=args.verbose
+
+    compare(files, identity_col, ignore_columns=ignore, verbose=verbose)
+
+if __name__ == "__main__":
+        sys.exit(main())
+
