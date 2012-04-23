@@ -54,7 +54,7 @@ def compare(files, id_column, ignore_columns=None, verbose=False):
 
     # ensure the id_column exists and get the column index
     if id_column not in _last_header:
-        raise Exception('The id coumn specified does not exist')
+        raise Exception('The id column specified does not exist')
     id_column_index=_last_header.index(id_column)
 
     # get the indexes for the ignore_columns
